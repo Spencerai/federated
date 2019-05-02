@@ -633,6 +633,71 @@ def replace_selection_from_tuple_with_tuple_element(comp):
   return transformation_utils.transform_postorder(comp, _transform)
 
 
+def rename_references_and_callers(comp):
+  """Gives globally unique names to locally scoped names under `comp`.
+
+  Args:
+    comp: Instance of `computation_building_blocks.ComputationBuildingBlock`,
+      representing the root of the AST in which we are hoping to rename all
+      references.
+
+  Returns:
+    Returns a transformed version of comp inside of which all variable names
+      are guaranteed to be unique.
+  """
+  initial_string = '_variable'
+
+  def _local_name_generator():
+    n = 0
+    while True:
+      n = n + 1
+      yield initial_string + str(n)
+
+  name_sequence = _local_name_generator()
+
+  class RenameNode(transformation_utils.BoundVariableTracker):
+    """transformation_utils.SymbolTree node for renaming References in ASTs."""
+
+    def __init__(self, name, value):
+      super(RenameNode, self).__init__(name, value)
+      py_typecheck.check_type(name, str)
+      self.new_name = six.next(name_sequence)
+
+    def update(self, reference=None):
+      del reference
+
+    def __str__(self):
+      return 'Value: {}, name: {}, new_name: {}'.format(self.value, self.name,
+                                                        self.new_name)
+
+  def transform(comp, context_tree):
+    """Renames References in `comp` to unique names."""
+    if isinstance(comp, computation_building_blocks.Reference):
+      new_name = context_tree.get_payload_with_name(comp.name).new_name
+      return computation_building_blocks.Reference(new_name,
+                                                   comp.type_signature,
+                                                   comp.context)
+    elif isinstance(comp, computation_building_blocks.Block):
+      new_locals = []
+      for name, val in comp.locals:
+        context_tree.walk_down_one_variable_binding()
+        new_name = context_tree.get_payload_with_name(name).new_name
+        new_locals.append((new_name, val))
+      return computation_building_blocks.Block(new_locals, comp.result)
+    elif isinstance(comp, computation_building_blocks.Lambda):
+      context_tree.walk_down_one_variable_binding()
+      new_name = context_tree.get_payload_with_name(
+          comp.parameter_name).new_name
+      return computation_building_blocks.Lambda(new_name, comp.parameter_type,
+                                                comp.result)
+    return comp
+
+  rename_tree = transformation_utils.SymbolTree(RenameNode)
+  new_comp = transformation_utils.transform_postorder_with_symbol_bindings(
+      comp, transform, rename_tree)
+  return new_comp
+
+
 def _is_called_intrinsic(comp, uri):
   """Returns `True` if `comp` is a called intrinsic with the `uri` or `uri`s.
 
