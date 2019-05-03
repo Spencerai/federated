@@ -51,6 +51,7 @@ py_library(
         "//tensorflow_federated/python/common_libs:anonymous_tuple",
         "//tensorflow_federated/python/common_libs:py_typecheck",
         "//tensorflow_federated/python/core/api:computation_types",
+        "//third_party/py/six",
     ],
 )
 
@@ -61,8 +62,10 @@ py_test(
     deps = [
         ":compiled_computation_transforms",
         ":computation_building_blocks",
+        ":computation_impl",
         ":context_stack_impl",
         ":tensorflow_serialization",
+        "//tensorflow_federated/python/common_libs:anonymous_tuple",
         "//tensorflow_federated/python/common_libs:test",
         "//tensorflow_federated/python/core/api:computation_types",
     ],
