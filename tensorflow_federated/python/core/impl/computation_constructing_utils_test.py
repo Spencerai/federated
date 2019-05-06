@@ -22,14 +22,21 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import tensorflow as tf
 
+from tensorflow_federated.python.common_libs import anonymous_tuple
 from tensorflow_federated.python.core.api import computation_types
 from tensorflow_federated.python.core.impl import computation_building_blocks
 from tensorflow_federated.python.core.impl import computation_constructing_utils
+from tensorflow_federated.python.core.impl import computation_impl
 from tensorflow_federated.python.core.impl import context_stack_impl
 from tensorflow_federated.python.core.impl import intrinsic_defs
 from tensorflow_federated.python.core.impl import placement_literals
 from tensorflow_federated.python.core.impl import type_utils
 from tensorflow_federated.python.core.impl import value_impl
+
+
+def _to_computation_impl(building_block):
+  return computation_impl.ComputationImpl(building_block.proto,
+                                          context_stack_impl.context_stack)
 
 
 class ComputationConstructionUtilsTest(parameterized.TestCase):
@@ -439,6 +446,150 @@ class ComputationConstructionUtilsTest(parameterized.TestCase):
         federated_setattr.tff_repr,
         'federated_apply(<(let value_comp_placeholder=x in (lambda_arg -> <a=value_comp_placeholder,lambda_arg[1],b=lambda_arg[2]>)),federated_comp>)'
     )
+
+  def test_drop_names_and_federated_zip_two_tuple_raises_on_none(self):
+    with self.assertRaises(TypeError):
+      computation_constructing_utils.drop_names_and_federated_zip_two_tuple(
+          None)
+
+  def test_drop_names_and_federated_zip_two_tuple_raises_wrong_type(self):
+    data = computation_building_blocks.Data('data',
+                                            computation_types.to_type(tf.int32))
+    with self.assertRaises(TypeError):
+      computation_constructing_utils.drop_names_and_federated_zip_two_tuple(
+          data)
+
+  def test_drop_names_and_federated_zip_two_tuple_raises_bad_placement(self):
+    bad_placement = placement_literals.PlacementLiteral('mock', 'mock', False,
+                                                        'mock')
+    federated_type = computation_types.FederatedType(tf.int32, bad_placement)
+    data = computation_building_blocks.Data('data', federated_type)
+    tup = computation_building_blocks.Tuple([data, data])
+    with self.assertRaises(TypeError):
+      computation_constructing_utils.drop_names_and_federated_zip_two_tuple(tup)
+
+  def test_drop_names_and_federated_zip_two_tuple_raises_conflicting_placements(
+      self):
+    federated_at_server = computation_types.FederatedType(
+        tf.int32, placement_literals.SERVER)
+    federated_at_clients = computation_types.FederatedType(
+        tf.int32, placement_literals.CLIENTS)
+    data = computation_building_blocks.Data(
+        'data', [federated_at_server, federated_at_clients])
+    with self.assertRaises(TypeError):
+      computation_constructing_utils.drop_names_and_federated_zip_two_tuple(
+          data)
+
+  def test_drop_names_and_federated_zip_two_tuple_raises_wrong_length(self):
+    federated_at_clients = computation_types.FederatedType(
+        tf.int32, placement_literals.CLIENTS)
+    data = computation_building_blocks.Data('data', [federated_at_clients] * 3)
+    with self.assertRaises(ValueError):
+      computation_constructing_utils.drop_names_and_federated_zip_two_tuple(
+          data)
+
+  def test_drop_names_and_federated_zip_two_tuple_constructs_zip_of_correct_type_unnamed_tuple(
+      self):
+    federated_int = computation_types.FederatedType(tf.int32,
+                                                    placement_literals.CLIENTS)
+    federated_float = computation_types.FederatedType(
+        tf.float32, placement_literals.CLIENTS)
+    data = computation_building_blocks.Data('data',
+                                            [federated_int, federated_float])
+    zipped_data = computation_constructing_utils.drop_names_and_federated_zip_two_tuple(
+        data)
+    expected_zipped_type = computation_types.FederatedType(
+        [tf.int32, tf.float32], placement_literals.CLIENTS)
+    self.assertEqual(zipped_data.type_signature, expected_zipped_type)
+
+  def test_drop_names_and_federated_zip_two_tuple_actually_drops_names(self):
+    federated_int = computation_types.FederatedType(tf.int32,
+                                                    placement_literals.CLIENTS)
+    federated_float = computation_types.FederatedType(
+        tf.float32, placement_literals.CLIENTS)
+    data = computation_building_blocks.Data('data', [('a', federated_int),
+                                                     ('b', federated_float)])
+    zipped_data = computation_constructing_utils.drop_names_and_federated_zip_two_tuple(
+        data)
+    expected_zipped_type = computation_types.FederatedType(
+        [tf.int32, tf.float32], placement_literals.CLIENTS)
+    self.assertEqual(zipped_data.type_signature, expected_zipped_type)
+
+  def test_lambda_to_drop_names_and_federated_zip_executes(self):
+    federated_int = computation_types.FederatedType(tf.int32,
+                                                    placement_literals.CLIENTS)
+    federated_float = computation_types.FederatedType(
+        tf.float32, placement_literals.CLIENTS)
+    arg = computation_building_blocks.Reference('arg', [('a', federated_int),
+                                                        ('b', federated_float)])
+    zipped = computation_constructing_utils.drop_names_and_federated_zip_two_tuple(
+        arg)
+    lam = computation_building_blocks.Lambda('arg', arg.type_signature, zipped)
+    executable = _to_computation_impl(lam)
+
+    expected_result = [anonymous_tuple.AnonymousTuple([(None, 0), (None, 1.)])]
+    self.assertEqual(executable({'a': [0], 'b': [1.]}), expected_result)
+
+  def test_construct_naming_function_raises_on_none(self):
+    with self.assertRaises(TypeError):
+      computation_constructing_utils.construct_naming_function(None, ['a'])
+
+  def test_construct_naming_function_raises_wrong_type(self):
+    with self.assertRaises(TypeError):
+      computation_constructing_utils.construct_naming_function(
+          computation_types.to_type(tf.int32), ['a'])
+
+  def test_construct_naming_function_raises_on_naked_string(self):
+    ntt = computation_types.NamedTupleType([tf.int32])
+    with self.assertRaises(TypeError):
+      computation_constructing_utils.construct_naming_function(ntt, 'a')
+
+  def test_construct_naming_function_raises_list_of_ints(self):
+    ntt = computation_types.NamedTupleType([tf.int32])
+    with self.assertRaises(TypeError):
+      computation_constructing_utils.construct_naming_function(ntt, [1])
+
+  def test_construct_naming_function_raises_wrong_list_length(self):
+    ntt = computation_types.NamedTupleType([tf.int32])
+    with self.assertRaises(ValueError):
+      computation_constructing_utils.construct_naming_function(ntt, ['a', 'b'])
+
+  def test_construct_naming_function_constructs_function_of_correct_type_from_unnamed_tuple(
+      self):
+    ntt = computation_types.NamedTupleType([tf.int32, tf.float32])
+    naming_fxn = computation_constructing_utils.construct_naming_function(
+        ntt, ['a', 'b'])
+    expected_function_type = computation_types.FunctionType(
+        [tf.int32, tf.float32], [('a', tf.int32), ('b', tf.float32)])
+    self.assertEqual(expected_function_type, naming_fxn.type_signature)
+
+  def test_construct_naming_function_constructs_function_of_correct_type_from_named_tuple(
+      self):
+    ntt = computation_types.NamedTupleType([('c', tf.int32), ('d', tf.float32)])
+    naming_fxn = computation_constructing_utils.construct_naming_function(
+        ntt, ['a', 'b'])
+    expected_function_type = computation_types.FunctionType([('c', tf.int32),
+                                                             ('d', tf.float32)],
+                                                            [('a', tf.int32),
+                                                             ('b', tf.float32)])
+    self.assertEqual(expected_function_type, naming_fxn.type_signature)
+
+  def test_construct_naming_function_only_names_unnamed_tuple(self):
+    ntt = computation_types.NamedTupleType([tf.int32, tf.float32])
+    naming_fxn = computation_constructing_utils.construct_naming_function(
+        ntt, ['a', 'b'])
+    executable_rename = _to_computation_impl(naming_fxn)
+    expected_result = anonymous_tuple.AnonymousTuple([('a', 0), ('b', 1.)])
+    self.assertEqual(executable_rename([0, 1.]), expected_result)
+
+  def test_construct_naming_function_only_overwrites_existing_names_in_tuple(
+      self):
+    ntt = computation_types.NamedTupleType([('c', tf.int32), ('d', tf.float32)])
+    naming_fxn = computation_constructing_utils.construct_naming_function(
+        ntt, ['a', 'b'])
+    executable_rename = _to_computation_impl(naming_fxn)
+    expected_result = anonymous_tuple.AnonymousTuple([('a', 0), ('b', 1.)])
+    self.assertEqual(executable_rename({'c': 0, 'd': 1.}), expected_result)
 
 
 if __name__ == '__main__':
